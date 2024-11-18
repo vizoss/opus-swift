@@ -30,10 +30,12 @@
 # - git clone of https://github.com/xiph/opus in directory ../opus
 # - checked iosSDKVersion and osxSDKVersion 
 
-iosSDKVersion="14.4"
-osxSDKVersion="11.1"
+iosSDKVersion=$(xcrun --sdk iphoneos --show-sdk-version)
+osxSDKVersion=$(xcrun --sdk macosx --show-sdk-version)
 opusDownload="https://archive.mozilla.org/pub/opus/opus-1.3.1.tar.gz"
 here=$(pwd)
+mkdir opus-swift/libs
+mkdir opus-swift/include
 
 rm -f opus-*.gz
 wget $opusDownload
@@ -86,7 +88,12 @@ generateLibopus()
     lipo -i "$tmp/$product"
 }
 
-xcodePlatforms="/Applications/Xcode.app/Contents/Developer/Platforms"
+#xcodePlatforms="/Applications/Xcode.app/Contents/Developer/Platforms"
+# Check actual xCode path
+xcodePath=$(xcode-select -p)
+# Set the path to the platforms
+xcodePlatforms="$xcodePath/Platforms"
+
 sdkSimulator="$xcodePlatforms/iPhoneSimulator.platform/Developer/SDKs/iPhoneSimulator$iosSDKVersion.sdk"
 sdkPhone="/$xcodePlatforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS$iosSDKVersion.sdk"
 sdkMac="/$xcodePlatforms/MacOSX.platform/Developer/SDKs/MacOSX$osxSDKVersion.sdk"
