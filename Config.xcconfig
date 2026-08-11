@@ -27,7 +27,7 @@
 // https://help.apple.com/xcode/#/dev745c5c974
 
 // Product Version, PLEASE CHANGE HERE to affect all targets
-MARKETING_VERSION = 0.8.0
+MARKETING_VERSION = 0.8.1
 // Build number, PLEASE CHANGE HERE to affect all targets
 CURRENT_PROJECT_VERSION = 3
 
