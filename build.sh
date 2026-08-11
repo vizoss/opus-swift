@@ -27,7 +27,7 @@
 # Usage: no parameters, settings mostly defined in xcode project
 # 
 
-opts="SKIP_INSTALL=NO BUILD_LIBRARIES_FOR_DISTRIBUTION=YES ENABLE_BITCODE=NO" 
+opts="SKIP_INSTALL=NO BUILD_LIBRARIES_FOR_DISTRIBUTION=YES ENABLE_BITCODE=NO CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO"
 
 dd=./DerivedData
 archivesPath="$dd/Archives"
@@ -42,35 +42,46 @@ mkdir -p "$archivesPath"
 mkdir -p "$builtPath" 
 
 pj="-project opus-swift.xcodeproj"
+libs=opus-swift/libs
+
+# The opus_ios scheme links opus-swift/libs/libopus_ios.a for both the device and the
+# simulator archive. prepare.sh produces a device-only libopus_ios.a plus a separate
+# libopus_sim.a (arm64 + x86_64). We build the device archive first, then swap the
+# simulator fat lib into place so the simulator archive links the matching slices
+# (this is what gives the framework proper arm64 simulator support on Apple Silicon).
 
 platform=iphoneos
 scheme=opus_ios
 echo "building for $platform..."
-xcodebuild archive $pj -scheme $scheme -destination="iOS" -sdk $platform -derivedDataPath $dd \
-    -archivePath "$archivesPath/$platform.xcarchive" $opts > "build-$platform.log"
+xcodebuild archive $pj -scheme $scheme -destination 'generic/platform=iOS' -derivedDataPath $dd \
+    -archivePath "$archivesPath/$platform.xcarchive" ARCHS="arm64" $opts > "build-$platform.log"
 cp -R "$archivesPath/$platform.xcarchive/$generatedPath" "$builtPath/Archive-$platform"
 
 platform=iphonesimulator
 scheme=opus_ios
 echo "building for $platform..."
-xcodebuild archive $pj -scheme $scheme -destination="iOS Simulator" -sdk $platform -derivedDataPath $dd \
-    -archivePath "$archivesPath/$platform.xcarchive" $opts > "build-$platform.log"
+# swap in the simulator fat lib (arm64 + x86_64) for the simulator archive
+cp "$libs/libopus_ios.a" "$libs/libopus_ios.a.device.bak"
+cp "$libs/libopus_sim.a" "$libs/libopus_ios.a"
+xcodebuild archive $pj -scheme $scheme -destination 'generic/platform=iOS Simulator' -derivedDataPath $dd \
+    -archivePath "$archivesPath/$platform.xcarchive" ARCHS="arm64 x86_64" $opts > "build-$platform.log"
+# restore the device lib
+mv "$libs/libopus_ios.a.device.bak" "$libs/libopus_ios.a"
 cp -R "$archivesPath/$platform.xcarchive/$generatedPath" "$builtPath/Archive-$platform"
 
 # Mac Catalyst needs Xcode >= 11.0
 platform=maccatalyst
 scheme=opus_catalyst
 echo "building for $platform..."
-#-sdk macosx ?
-xcodebuild archive $pj -scheme $scheme -archs="x86_64h" -destination "generic/platform=macOS,variant=Mac Catalyst,name=Any Mac" -derivedDataPath $dd \
-    -archivePath "$archivesPath/$platform.xcarchive" $opts > "build-$platform.log"
+xcodebuild archive $pj -scheme $scheme -destination 'generic/platform=macOS,variant=Mac Catalyst' -derivedDataPath $dd \
+    -archivePath "$archivesPath/$platform.xcarchive" ARCHS="arm64 x86_64" $opts > "build-$platform.log"
 cp -R "$archivesPath/$platform.xcarchive/$generatedPath" "$builtPath/Archive-$platform"
 
 platform=macosx
 scheme=opus_macos
 echo "building for $platform..."
-xcodebuild archive $pj -scheme $scheme -destination='My Mac' -sdk $platform -derivedDataPath $dd \
-    -archivePath "$archivesPath/$platform.xcarchive" $opts > "build-$platform.log"
+xcodebuild archive $pj -scheme $scheme -destination 'generic/platform=macOS' -derivedDataPath $dd \
+    -archivePath "$archivesPath/$platform.xcarchive" ARCHS="arm64 x86_64" $opts > "build-$platform.log"
 cp -R "$archivesPath/$platform.xcarchive/$generatedPath" "$builtPath/Archive-$platform"
 
 # name of final xcframework
@@ -90,5 +101,6 @@ $cmd
 
 echo "zip $xcframework including LICENSE file..."
 cp LICENSE $xcframework
-zip -q -r $xcframework.zip $xcframework
+# -y preserves symlinks inside the macOS / Mac Catalyst versioned framework bundles
+zip -q -r -y $xcframework.zip $xcframework
 echo "done."

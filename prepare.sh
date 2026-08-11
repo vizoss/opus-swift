@@ -22,145 +22,125 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
-# 
-# Generates fat libopus.a for iOS and for macOS.
-# 
-# Preconditions: 
-# - clang installed
-# - git clone of https://github.com/xiph/opus in directory ../opus
-# - checked iosSDKVersion and osxSDKVersion 
+#
+# Builds per-slice static libopus libraries for a modern, complete XCFramework:
+#   opus-swift/libs/libopus_ios.a       device        (arm64)
+#   opus-swift/libs/libopus_sim.a       iOS simulator (arm64 + x86_64)
+#   opus-swift/libs/libopus_osx.a       macOS         (arm64 + x86_64)
+#   opus-swift/libs/libopus_catalyst.a  Mac Catalyst  (arm64 + x86_64)
+# and copies the opus public headers into opus-swift/include.
+#
+# Preconditions:
+# - Xcode command line tools installed (clang, xcrun, lipo)
+#
 
-iosSDKVersion=$(xcrun --sdk iphoneos --show-sdk-version)
-osxSDKVersion=$(xcrun --sdk macosx --show-sdk-version)
 opusDownload="https://archive.mozilla.org/pub/opus/opus-1.3.1.tar.gz"
 here=$(pwd)
-mkdir opus-swift/libs
-mkdir opus-swift/include
 
-rm -f opus-*.gz
-wget $opusDownload
+mkdir -p opus-swift/libs
+mkdir -p opus-swift/include
 
-libopusDir=`basename $opusDownload | sed "s/\.tar.gz$//"` 
+# resolve SDK paths (robust across Xcode versions / runners)
+sdkPhone=$(xcrun --sdk iphoneos --show-sdk-path)
+sdkSim=$(xcrun --sdk iphonesimulator --show-sdk-path)
+sdkMac=$(xcrun --sdk macosx --show-sdk-path)
+
+archive=`basename $opusDownload`
+rm -f opus-*.tar.gz
+if command -v wget >/dev/null 2>&1; then
+    wget "$opusDownload"
+else
+    curl -L -o "$archive" "$opusDownload"
+fi
+
+libopusDir=`basename $opusDownload | sed "s/\.tar.gz$//"`
 rm -rf $libopusDir
-tar -xvzf `basename $opusDownload`
-echo "opus sources ready in $libopusDir" 
-echo "\n==========================="
-
+tar -xzf "$archive"
+echo "opus sources ready in $libopusDir"
+echo "==========================="
 
 opuspath="$here/$libopusDir"
 opusArtifact=.libs/libopus.a
 opusHeaders="$opuspath/include"
 
-tmp=./prepare
-fatLibsDest=opus-swift/libs
+tmp="$here/prepare"
+fatLibsDest="$here/opus-swift/libs"
 
+rm -rf "$tmp"
+mkdir -p "$tmp"
+
+# generateLibopus <label> <arch> <sdkpath> <host> <platform-flags...>
 generateLibopus()
 {
-    host=$1
+    label=$1
     arch=$2
     sdk=$3
+    host=$4
+    shift 4
+    platformFlags="$@"
 
-    sdkname=`basename $sdk | sed "s/[0-9\.]*\.sdk$//"` # stripping path, version and '.sdk'
-    product="libopus_${host}_${arch}_$sdkname.a"
-    echo "\n----------------------------"
-    echo "generating $tmp/$product ...\n"
+    product="libopus_${label}.a"
+    logfile="$tmp/gen_${label}.log"
+    echo "----------------------------"
+    echo "generating $product (arch=$arch host=$host flags=$platformFlags) ..."
 
-    logfile="$here/$tmp/generate_${host}_${arch}_$sdkname.log"
+    cd "$opuspath"
+    make clean >/dev/null 2>&1
 
-    cd $opuspath
-    make clean > $logfile
-    
-    if [[ $sdkname =~ "iPhone" ]]; then 
-        minversion="-miphoneos-version-min=9.0"
-    else # contains "Mac"
-        minversion="-mmacosx-version-min=10.10"
-    fi
-    ./configure CC=clang --enable-float-approx --disable-shared --enable-static --with-pic \
-        --disable-extra-programs --disable-doc --host=$host \
-        CFLAGS=" -arch $arch -Ofast -flto -g -fPIE $minversion -isysroot $sdk" \
-        LDFLAGS=" -flto -fPIE $minversion" >> $logfile
+    ./configure CC=clang --disable-shared --enable-static --with-pic \
+        --enable-float-approx --disable-extra-programs --disable-doc \
+        --host=$host \
+        CFLAGS="-arch $arch -isysroot $sdk $platformFlags -Ofast -g -fPIC" \
+        LDFLAGS="-arch $arch -isysroot $sdk $platformFlags" > "$logfile" 2>&1
 
-    make >> $logfile
+    make -j$(sysctl -n hw.ncpu) >> "$logfile" 2>&1
 
-    cd $here
     cp "$opuspath/$opusArtifact" "$tmp/$product"
-    echo "generated $product, see $logfile\n"
-    lipo -i "$tmp/$product"
+    cd "$here"
+    echo "generated $tmp/$product"
+    lipo -info "$tmp/$product"
 }
 
-#xcodePlatforms="/Applications/Xcode.app/Contents/Developer/Platforms"
-# Check actual xCode path
-xcodePath=$(xcode-select -p)
-# Set the path to the platforms
-xcodePlatforms="$xcodePath/Platforms"
+iosMin="12.0"
+macMin="11.0"
 
-sdkSimulator="$xcodePlatforms/iPhoneSimulator.platform/Developer/SDKs/iPhoneSimulator$iosSDKVersion.sdk"
-sdkPhone="/$xcodePlatforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS$iosSDKVersion.sdk"
-sdkMac="/$xcodePlatforms/MacOSX.platform/Developer/SDKs/MacOSX$osxSDKVersion.sdk"
+# --- iOS device (arm64) ---
+generateLibopus "ios_device_arm64" "arm64"  "$sdkPhone" "aarch64-apple-darwin" "-miphoneos-version-min=$iosMin"
 
-cd $opuspath
-make distclean
-cd $here
-rm -rf $tmp
-mkdir -p $tmp
+# --- iOS simulator (arm64 + x86_64) ---
+generateLibopus "ios_sim_arm64"    "arm64"  "$sdkSim"   "aarch64-apple-darwin" "-mios-simulator-version-min=$iosMin"
+generateLibopus "ios_sim_x86_64"   "x86_64" "$sdkSim"   "x86_64-apple-darwin"  "-mios-simulator-version-min=$iosMin"
 
+# --- macOS (arm64 + x86_64) ---
+generateLibopus "mac_arm64"        "arm64"  "$sdkMac"   "aarch64-apple-darwin" "-mmacosx-version-min=$macMin"
+generateLibopus "mac_x86_64"       "x86_64" "$sdkMac"   "x86_64-apple-darwin"  "-mmacosx-version-min=$macMin"
 
-fatProductIos="libopus_ios.a"
-echo "\n==========================="
-echo "generate $fatProductIos ..."
-generateLibopus "x86_64-apple-darwin" "x86_64" $sdkSimulator
-generateLibopus "x86_64-apple-darwin" "i386" $sdkSimulator
-generateLibopus "arm-apple-darwin" "armv7" $sdkPhone
-generateLibopus "arm-apple-darwin" "arm64" $sdkPhone
-cd $tmp
-products=`ls | grep libopus | grep iPhone`
-echo "generating $fatProductIos from ${products} ..." 
-lipo -create ${products} -output $fatProductIos
-cd $here
-cp -v $tmp/$fatProductIos $fatLibsDest
-lipo -info $fatLibsDest/$fatProductIos
-echo "$fatLibsDest/$fatProductIos generated."
-echo "\n==========================="
+# --- Mac Catalyst (arm64 + x86_64) ---
+generateLibopus "cat_arm64"        "arm64"  "$sdkMac"   "aarch64-apple-darwin" "-target arm64-apple-ios13.1-macabi"
+generateLibopus "cat_x86_64"       "x86_64" "$sdkMac"   "x86_64-apple-darwin"  "-target x86_64-apple-ios13.1-macabi"
 
+echo "==========================="
+echo "combining slices with lipo ..."
 
-fatProductMac="libopus_osx.a"
-echo "\n==========================="
-echo "generate $fatProductMac ..."
-generateLibopus "x86_64-apple-darwin20.2.0" "x86_64" $sdkMac
-generateLibopus "aarch64-apple-darwin20.0.0" "arm64" $sdkMac
-cd $tmp
-products=`ls | grep libopus | grep Mac`
-echo "generating $fatProductMac from ${products} ..." 
-lipo -create ${products} -output $fatProductMac
-cd $here
-cp -v $tmp/$fatProductMac $fatLibsDest
-lipo -info $fatLibsDest/$fatProductMac
-echo "$fatLibsDest/$fatProductMac ready."
-echo "\n==========================="
+# device: single-arch, used by the opus_ios scheme for the iphoneos archive
+cp "$tmp/libopus_ios_device_arm64.a" "$fatLibsDest/libopus_ios.a"
+# simulator fat lib, swapped in by build.sh before the iphonesimulator archive
+lipo -create "$tmp/libopus_ios_sim_arm64.a" "$tmp/libopus_ios_sim_x86_64.a" -output "$fatLibsDest/libopus_sim.a"
+# macOS fat lib
+lipo -create "$tmp/libopus_mac_arm64.a" "$tmp/libopus_mac_x86_64.a" -output "$fatLibsDest/libopus_osx.a"
+# Mac Catalyst fat lib
+lipo -create "$tmp/libopus_cat_arm64.a" "$tmp/libopus_cat_x86_64.a" -output "$fatLibsDest/libopus_catalyst.a"
 
-
-fatProductCatalyst="libopus_catalyst.a"
-echo "\n==========================="
-echo "generate $fatProductCatalyst ..."
-generateLibopus "x86_64-apple-darwin20.2.0" "x86_64h" $sdkMac
-cd $tmp
-products=`ls | grep libopus | grep x86_64h`
-echo "generating $fatProductCatalyst from ${products} ..." 
-lipo -create ${products} -output $fatProductCatalyst
-cd $here
-cp -v $tmp/$fatProductCatalyst $fatLibsDest
-lipo -info $fatLibsDest/$fatProductCatalyst
-echo "$fatLibsDest/$fatProductCatalyst ready."
-echo "\n==========================="
-echo "generating libraries done."
-
-echo "\n==========================="
-cd $here
-echo "copy headers into opus-swift.xcodeproj"
-for f in $opusHeaders/*.h; do
-    file=`basename $f`
-    cp -v $f ./opus-swift/include
+echo "--- resulting libs ---"
+for l in libopus_ios.a libopus_sim.a libopus_osx.a libopus_catalyst.a; do
+    echo "$l:"; lipo -info "$fatLibsDest/$l"
 done
-echo "opus-swift.xcodeproj is ready"
-echo "done."
 
+echo "==========================="
+echo "copy headers into opus-swift/include"
+for f in $opusHeaders/*.h; do
+    cp -v "$f" "$here/opus-swift/include"
+done
+
+echo "opus-swift.xcodeproj is ready."
+echo "done."

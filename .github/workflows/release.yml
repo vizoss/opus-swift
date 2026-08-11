@@ -1,0 +1,114 @@
+name: Build & Release XCFramework
+
+# Triggered automatically when a version tag is pushed (e.g. `git tag 0.8.1 && git push origin 0.8.1`).
+# It compiles libopus for every Apple platform slice, builds YbridOpus.xcframework, publishes a
+# GitHub Release with the zip + podspec, then rewrites Package.swift / podspec / Config.xcconfig
+# with the new version + checksum, commits that to the default branch and moves the tag onto that
+# commit so Swift Package Manager's `from:` resolution and CocoaPods both pick up a matching manifest.
+on:
+  push:
+    tags:
+      - '[0-9]+.[0-9]+.[0-9]+'
+      - 'v[0-9]+.[0-9]+.[0-9]+'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to build & release (e.g. 0.8.1). A tag with this name is created.'
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: macos-14
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Select Xcode
+        run: sudo xcode-select -switch /Applications/Xcode.app
+
+      - name: Resolve version / tag
+        id: ver
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            TAG="${{ github.event.inputs.version }}"
+          else
+            TAG="${GITHUB_REF_NAME}"
+          fi
+          VERSION="${TAG#v}"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Building tag=$TAG version=$VERSION"
+
+      - name: Install tools
+        run: |
+          brew list wget >/dev/null 2>&1 || brew install wget
+          brew list autoconf >/dev/null 2>&1 || brew install autoconf automake libtool
+
+      - name: Build libopus slices
+        run: |
+          chmod +x prepare.sh
+          ./prepare.sh
+
+      - name: Build XCFramework
+        run: |
+          chmod +x build.sh
+          ./build.sh
+          test -f YbridOpus.xcframework.zip
+
+      - name: Compute checksum
+        id: sum
+        run: |
+          CHECKSUM=$(swift package compute-checksum YbridOpus.xcframework.zip)
+          echo "checksum=$CHECKSUM" >> "$GITHUB_OUTPUT"
+          echo "checksum=$CHECKSUM"
+
+      - name: Update manifests (Package.swift, podspec, xcconfig)
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+          CHECKSUM: ${{ steps.sum.outputs.checksum }}
+        run: |
+          sed -i '' -E "s/let version = \".*\"/let version = \"$VERSION\"/" Package.swift
+          sed -i '' -E "s/checksum: \".*\"/checksum: \"$CHECKSUM\"/" Package.swift
+          sed -i '' -E "s/s\.version([[:space:]]*)=([[:space:]]*)'.*'/s.version\1=\2'$VERSION'/" YbridOpus.podspec
+          sed -i '' -E "s/^MARKETING_VERSION = .*/MARKETING_VERSION = $VERSION/" Config.xcconfig
+          echo "----- Package.swift -----"; grep -E "version|checksum|url" Package.swift
+          echo "----- podspec -----"; grep -E "s.version" YbridOpus.podspec
+
+      - name: Commit manifests and move tag
+        env:
+          TAG: ${{ steps.ver.outputs.tag }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Package.swift YbridOpus.podspec Config.xcconfig
+          git commit -m "release $TAG: sync version and xcframework checksum"
+          # publish the manifest commit on the default branch (tags should be cut from its tip)
+          git push origin "HEAD:$DEFAULT_BRANCH"
+          # move the release tag onto the commit that carries the matching manifest
+          git tag -f "$TAG"
+          git push -f origin "refs/tags/$TAG"
+
+      - name: Create / update GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.ver.outputs.tag }}
+        run: |
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" YbridOpus.xcframework.zip YbridOpus.podspec --clobber
+          else
+            gh release create "$TAG" \
+              YbridOpus.xcframework.zip YbridOpus.podspec \
+              --title "$TAG" \
+              --generate-notes \
+              --target "$(git rev-parse HEAD)"
+          fi
+
+      - name: Lint podspec
+        run: |
+          pod lib lint YbridOpus.podspec --allow-warnings || echo "::warning::pod lib lint reported issues"
