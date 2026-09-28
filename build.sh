@@ -27,6 +27,10 @@
 # Usage: no parameters, settings mostly defined in xcode project
 # 
 
+# Do not continue after a failed archive. Continuing would create and upload an
+# empty ZIP, which looks like a successful release but cannot be consumed.
+set -e
+
 opts="SKIP_INSTALL=NO BUILD_LIBRARIES_FOR_DISTRIBUTION=YES ENABLE_BITCODE=NO CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO"
 
 dd=./DerivedData
@@ -94,7 +98,8 @@ echo "generating $xcframework for \n$products\n..."
 cmd="xcodebuild -quiet -create-xcframework "
 for entry in $products; do
     platform="${entry#Archive-}"
-    dsym="$archivesPath/$platform.xcarchive/dSYMs/$framework.dSYM"
+    # xcodebuild requires an absolute path for -debug-symbols.
+    dsym="$(pwd)/${archivesPath#./}/$platform.xcarchive/dSYMs/$framework.dSYM"
 
     cmd="$cmd -framework $builtPath/$entry/$framework "
     # Keep the matching dSYM in the XCFramework. Without it, client archives
@@ -114,4 +119,5 @@ echo "zip $xcframework including LICENSE file..."
 cp LICENSE $xcframework
 # -y preserves symlinks inside the macOS / Mac Catalyst versioned framework bundles
 zip -q -r -y $xcframework.zip $xcframework
+test -s "$xcframework.zip"
 echo "done."
