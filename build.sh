@@ -93,7 +93,18 @@ echo "generating $xcframework for \n$products\n..."
 
 cmd="xcodebuild -quiet -create-xcframework "
 for entry in $products; do
+    platform="${entry#Archive-}"
+    dsym="$archivesPath/$platform.xcarchive/dSYMs/$framework.dSYM"
+
     cmd="$cmd -framework $builtPath/$entry/$framework "
+    # Keep the matching dSYM in the XCFramework. Without it, client archives
+    # cannot symbolicate crashes from YbridOpus and Xcode warns about missing
+    # symbol information for this binary framework.
+    if [ -d "$dsym" ]; then
+        cmd="$cmd -debug-symbols $dsym "
+    else
+        echo "warning: dSYM not found for $platform: $dsym" >&2
+    fi
 done
 cmd="$cmd -output $xcframework"
 #echo "$cmd"
